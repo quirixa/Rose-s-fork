@@ -182,6 +182,7 @@
         <span class="pill"><b>Best:</b>&nbsp;<span id="best">0</span></span>
         <span class="pill"><b>Wave:</b>&nbsp;<span id="wave">1</span></span>
         <span class="pill"><b>HP:</b>&nbsp;<span id="hp">100</span></span>
+        <span class="pill"><b>Combo:</b>&nbsp;<span id="combo">0</span></span>
         <span class="pill"><b>FPS:</b>&nbsp;<span id="fps">0</span></span>
         <span class="pill"><b>Vol:</b>&nbsp;<span id="vol">ON</span></span>
         <span class="pill meter" title="Dash energy"><span id="dashFill" class="fill"></span></span>
@@ -228,6 +229,7 @@
       best: document.getElementById('best'),
       wave: document.getElementById('wave'),
       hp: document.getElementById('hp'),
+      combo: document.getElementById('combo'),
       fps: document.getElementById('fps'),
       vol: document.getElementById('vol'),
       dashFill: document.getElementById('dashFill'),
@@ -370,21 +372,27 @@
     // --- Game state ---
     let running = false, paused = false, gameOver = false;
     let last = performance.now();
-    let score = 0, wave = 1;
+    let score = 0, wave = 1, combo = 0, comboTimer = 0;
     let spawnTimer = 0, fps = 0, fpsAccum = 0, fpsFrames = 0;
     let wantDash = false, wantBomb = false, shake = 0;
 
     const player = {
       x: W / 2, y: H / 2, r: 16, ax: 0, ay: 0, vx: 0, vy: 0, speed: 260,
       aim: 0, hp: 100, maxhp: 100, fireCD: 0, fireRate: 8, bulletSpeed: 560,
-      damage: 10, dashCD: 0, dashEnergy: 1, bombCD: 0, inv: 0, alive: true
+      damage: 10, dashCD: 0, dashEnergy: 1, bombCD: 0, inv: 0, alive: true,
+      multi: 0, pierce: 0
     };
 
     const bullets = [], ebullets = [], enemies = [], pickups = [], particles = [];
 
     // --- Spawning ---
     function spawnEnemy() {
-      const type = RNG() < 0.55 ? 'chaser' : (RNG() < 0.8 ? 'shooter' : 'splitter');
+      const typeProb = RNG();
+      let type;
+      if (typeProb < 0.4) type = 'chaser';
+      else if (typeProb < 0.7) type = 'shooter';
+      else if (typeProb < 0.9) type = 'splitter';
+      else type = 'tank';
       const margin = 60;
       const side = (RNG() * 4) | 0;
       let x, y;
@@ -394,11 +402,23 @@
       else { x = rand(0, W); y = H + margin; }
       if (type === 'chaser') enemies.push({ type, x, y, r: 14, hp: 20 + wave * 2, t: 0, speed: 100 + wave * 3, scale: 1 });
       else if (type === 'shooter') enemies.push({ type, x, y, r: 16, hp: 30 + wave * 3, t: 0, speed: 80 + wave * 2, cd: rand(0.6, 1.3), scale: 1 });
-      else enemies.push({ type, x, y, r: 12, hp: 18 + wave * 1.5, t: 0, speed: 120 + wave * 4, scale: 1 });
+      else if (type === 'splitter') enemies.push({ type, x, y, r: 12, hp: 18 + wave * 1.5, t: 0, speed: 120 + wave * 4, scale: 1 });
+      else if (type === 'tank') enemies.push({ type, x, y, r: 20, hp: 50 + wave * 4, t: 0, speed: 60 + wave * 2, cd: rand(0.8, 1.4), scale: 1 });
+    }
+
+    function spawnBoss() {
+      const margin = 60;
+      const side = (RNG() * 4) | 0;
+      let x, y;
+      if (side === 0) { x = -margin; y = rand(0, H); }
+      else if (side === 1) { x = W + margin; y = rand(0, H); }
+      else if (side === 2) { x = rand(0, W); y = -margin; }
+      else { x = rand(0, W); y = H + margin; }
+      enemies.push({ type: 'boss', x, y, r: 32, hp: 200 + wave * 10, t: 0, speed: 70 + wave * 2, cd: 0.5, scale: 1 });
     }
 
     function spawnPickup(x, y) {
-      const types = ['heal', 'rate', 'dmg', 'speed', 'shield'];
+      const types = ['heal', 'rate', 'dmg', 'speed', 'shield', 'multi', 'pierce'];
       const t = types[(RNG() * types.length) | 0];
       pickups.push({ x, y, r: 10, t, life: 10 });
     }
@@ -409,12 +429,14 @@
       gameOver = false;
       score = 0;
       wave = 1;
+      combo = 0;
+      comboTimer = 0;
       spawnTimer = 0;
       shake = 0;
       Object.assign(player, {
         x: W / 2, y: H / 2, vx: 0, vy: 0, ax: 0, ay: 0, aim: 0, hp: 100, maxhp: 100,
         fireCD: 0, fireRate: 8, bulletSpeed: 560, damage: 10, dashCD: 0, dashEnergy: 1,
-        bombCD: 0, inv: 0, alive: true, speed: 260
+        bombCD: 0, inv: 0, alive: true, speed: 260, multi: 0, pierce: 0
       });
       bullets.length = 0;
       ebullets.length = 0;
@@ -424,6 +446,7 @@
       ui.title.classList.add('hidden');
       ui.wave.textContent = 1;
       ui.hp.textContent = 100;
+      ui.combo.textContent = 0;
       ui.score.textContent = 0;
       last = performance.now();
       initAudio();
@@ -479,9 +502,17 @@
     function pickupSound() { beep('triangle', 680, 0.07, 0.18); }
     function bombSound() { beep('sawtooth', 300, 0.12, 0.28); }
     function dashSound() { beep('square', 520, 0.05, 0.18); }
+    function comboSound() { beep('triangle', 880, 0.08, 0.2); }
 
     // --- Update ---
     function update(dt) {
+      // Combo timer
+      comboTimer = Math.max(0, comboTimer - dt);
+      if (comboTimer <= 0) {
+        combo = 0;
+        ui.combo.textContent = combo;
+      }
+
       // Wave & spawns
       spawnTimer -= dt;
       if (spawnTimer <= 0) {
@@ -490,6 +521,9 @@
         spawnTimer = 5 - clamp(wave * 0.1, 0, 3.5);
         wave++;
         ui.wave.textContent = wave;
+        if (wave % 10 === 0) {
+          spawnBoss();
+        }
       }
 
       // Input axes
@@ -520,13 +554,17 @@
       player.fireCD = Math.max(0, player.fireCD - dt);
       const firing = mouse.down || sticks.R.active;
       if (firing && player.fireCD === 0) {
-        const spread = 0.05;
-        const a = player.aim + rand(-spread, spread);
-        const sp = player.bulletSpeed;
-        bullets.push({ x: player.x + Math.cos(a) * 18, y: player.y + Math.sin(a) * 18, dx: Math.cos(a) * sp, dy: Math.sin(a) * sp, r: 4, life: 1.2, dmg: player.damage });
+        const baseSpread = 0.05;
+        const numShots = 1 + player.multi * 2;
+        const shotSpread = 0.15;
+        for (let k = -(numShots - 1) / 2; k <= (numShots - 1) / 2; k++) {
+          const a = player.aim + rand(-baseSpread, baseSpread) + k * shotSpread;
+          const sp = player.bulletSpeed;
+          bullets.push({ x: player.x + Math.cos(a) * 18, y: player.y + Math.sin(a) * 18, dx: Math.cos(a) * sp, dy: Math.sin(a) * sp, r: 4, life: 1.2, dmg: player.damage, pierce: player.pierce });
+          burst(player.x + Math.cos(a) * 12, player.y + Math.sin(a) * 12, 5, 'rgba(103,232,249,0.9)', 140);
+        }
         player.fireCD = 1 / player.fireRate;
         shootSound();
-        burst(player.x + Math.cos(a) * 12, player.y + Math.sin(a) * 12, 5, 'rgba(103,232,249,0.9)', 140);
       }
 
       // Dash
@@ -551,7 +589,7 @@
         player.bombCD = 5;
         for (let i = 0; i < 48; i++) {
           const ang = i / 48 * TAU;
-          bullets.push({ x: player.x, y: player.y, dx: Math.cos(ang) * 340, dy: Math.sin(ang) * 340, r: 4, life: 0.8, dmg: player.damage * 0.5 });
+          bullets.push({ x: player.x, y: player.y, dx: Math.cos(ang) * 340, dy: Math.sin(ang) * 340, r: 4, life: 0.8, dmg: player.damage * 0.5, pierce: player.pierce });
         }
         burst(player.x, player.y, 45, 'rgba(247,114,181,0.95)', 220);
         bombSound();
@@ -607,6 +645,28 @@
             ebullets.push({ x: e.x + Math.cos(a) * 12, y: e.y + Math.sin(a) * 12, dx: Math.cos(a) * 300, dy: Math.sin(a) * 300, r: 4, life: 2 });
             beep('sine', 400, 0.03, 0.12);
           }
+        } else if (e.type === 'tank') {
+          e.cd -= dt;
+          if (e.cd <= 0) {
+            e.cd = rand(1.5, 2.2);
+            const a = angle(e.x, e.y, player.x, player.y);
+            for (let k = -1; k <= 1; k++) {
+              const aa = a + k * 0.2;
+              ebullets.push({ x: e.x + Math.cos(aa) * 15, y: e.y + Math.sin(aa) * 15, dx: Math.cos(aa) * 250, dy: Math.sin(aa) * 250, r: 5, life: 2.5 });
+            }
+            beep('sine', 350, 0.04, 0.15);
+          }
+        } else if (e.type === 'boss') {
+          e.cd -= dt;
+          if (e.cd <= 0) {
+            e.cd = 1.0;
+            const a = angle(e.x, e.y, player.x, player.y) + e.t * 2; // Rotating spiral
+            for (let k = 0; k < 8; k++) {
+              const aa = a + k * TAU / 8;
+              ebullets.push({ x: e.x + Math.cos(aa) * 20, y: e.y + Math.sin(aa) * 20, dx: Math.cos(aa) * 200, dy: Math.sin(aa) * 200, r: 6, life: 3 });
+            }
+            beep('sawtooth', 200, 0.05, 0.18);
+          }
         }
         // Collide with player
         if (circleHit(player.x, player.y, player.r, e.x, e.y, e.r)) {
@@ -629,9 +689,18 @@
             e.hp -= b.dmg;
             e.scale = 1.2; // Scale up on hit
             burst(b.x, b.y, 8, 'rgba(167,139,250,0.95)', 160);
-            bullets.splice(j, 1);
+            if (b.pierce > 0) {
+              b.pierce--;
+            } else {
+              bullets.splice(j, 1);
+            }
             if (e.hp <= 0) {
-              score += 10 + Math.floor(wave * 0.5);
+              combo++;
+              comboTimer = 3;
+              if (combo > 1) comboSound();
+              ui.combo.textContent = combo;
+              const baseScore = (e.type === 'boss' ? 100 : 10) + Math.floor(wave * 0.5);
+              score += baseScore * combo;
               ui.score.textContent = Math.floor(score);
               if (RNG() < 0.35) spawnPickup(e.x, e.y);
               if (e.type === 'splitter') {
@@ -659,6 +728,8 @@
           if (p.t === 'dmg') { player.damage += 2.5; }
           if (p.t === 'speed') { player.speed += 12; }
           if (p.t === 'shield') { player.inv = 1.2; }
+          if (p.t === 'multi') { player.multi += 1; }
+          if (p.t === 'pierce') { player.pierce += 1; }
           ui.hp.textContent = Math.round(player.hp);
           pickupSound();
           burst(p.x, p.y, 20, 'rgba(253,224,71,0.95)', 220);
@@ -805,19 +876,20 @@
     }
 
     function drawEnemy(e) {
-      const col = e.type === 'chaser' ? '#f59e0b' : e.type === 'shooter' ? '#a78bfa' : '#34d399';
-      glow(e.x, e.y, 22, e.type === 'shooter' ? 'rgba(167,139,250,0.35)' : 'rgba(255,255,255,0.2)', 1);
+      const col = e.type === 'chaser' ? '#f59e0b' : e.type === 'shooter' ? '#a78bfa' : e.type === 'splitter' ? '#34d399' : e.type === 'tank' ? '#fb7185' : '#e11d48';
+      const baseR = e.r;
+      glow(e.x, e.y, baseR + 2, e.type === 'shooter' || e.type === 'boss' ? 'rgba(167,139,250,0.35)' : 'rgba(255,255,255,0.2)', 1);
       ctx.save();
       ctx.translate(e.x, e.y);
       ctx.scale(e.scale, e.scale);
-      rounded(-14, -12, 28, 24, 8, '#22334f');
+      rounded(-baseR * 0.9, -baseR * 0.8, baseR * 1.8, baseR * 1.6, baseR * 0.4, '#22334f');
       ctx.fillStyle = col;
-      ctx.fillRect(-6, -3, 12, 6);
+      ctx.fillRect(-baseR * 0.4, -baseR * 0.2, baseR * 0.8, baseR * 0.4);
       ctx.restore();
     }
 
     function drawPickup(p) {
-      const col = p.t === 'heal' ? '#34d399' : p.t === 'rate' ? '#67e8f9' : p.t === 'dmg' ? '#fb7185' : p.t === 'speed' ? '#fde047' : '#a78bfa';
+      let col = p.t === 'heal' ? '#34d399' : p.t === 'rate' ? '#67e8f9' : p.t === 'dmg' ? '#fb7185' : p.t === 'speed' ? '#fde047' : p.t === 'shield' ? '#a78bfa' : p.t === 'multi' ? '#f472b6' : '#ec4899';
       glow(p.x, p.y, 18, col.replace('1', '0.35'), 1);
       rounded(p.x - 8, p.y - 8, 16, 16, 6, col);
     }
