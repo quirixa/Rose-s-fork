@@ -212,17 +212,14 @@
       <div id="stickR" class="stick"></div>
     </div>
   </div>
-
   <script>
   // === ROGUE SECTOR — single-file 2D top-down shooter ===
   // Features: twin-stick (mouse + touch sticks), waves & scaling difficulty, dash with energy, pulse bomb, upgrades drops,
   // chaser/shooter/splitter enemies, particles, screen shake, WebAudio beeps, pause, high score.
-
   (function(){
     const canvas = document.getElementById('game');
     const ctx = canvas.getContext('2d');
     const W = canvas.width, H = canvas.height;
-
     // --- UI ---
     const ui = {
       score: document.getElementById('score'),
@@ -242,10 +239,8 @@
       stickL: document.getElementById('stickL'),
       stickR: document.getElementById('stickR'),
     };
-
     let bestScore = +localStorage.getItem('rogue_best') || 0;
     ui.best.textContent = bestScore;
-
     // --- Audio ---
     let audioCtx = null, muted = false;
     function initAudio() {
@@ -268,19 +263,16 @@
       o.start(t);
       o.stop(t + dur);
     }
-
     // --- Math/Util ---
     const RNG = (seed => () => (seed = (seed * 1664525 + 1013904223) | 0, (seed >>> 0) / 4294967296))((Date.now() ^ 1234567) | 0);
     const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
     const lerp = (a, b, t) => a + (b - a) * t;
     const rand = (a, b) => a + RNG() * (b - a);
     const TAU = Math.PI * 2;
-
     function angle(x1, y1, x2, y2) { return Math.atan2(y2 - y1, x2 - x1); }
     function len(x, y) { return Math.hypot(x, y); }
     function norm(x, y) { const L = len(x, y) || 1; return { x: x / L, y: y / L }; }
     function circleHit(ax, ay, ar, bx, by, br) { return len(ax - bx, ay - by) < ar + br; }
-
     // --- Input (keyboard/mouse) ---
     let keys = {};
     let mouse = { x: W / 2, y: H / 2, down: false };
@@ -308,11 +300,31 @@
       mouse.y = (e.clientY - rect.top) / (rect.height) * H;
     });
     canvas.addEventListener('pointerdown', e => {
+      const rect = canvas.getBoundingClientRect();
+      const mx = (e.clientX - rect.left) / rect.width * W;
+      const my = (e.clientY - rect.top) / rect.height * H;
       mouse.down = true;
       initAudio();
+      if (upgradeState) {
+        const btnW = 200, btnH = 60;
+        const spacing = 1.1;
+        const startX = W / 2 - (btnW * 3 * spacing - btnW * (spacing - 1)) / 2;
+        const startY = H / 2 - btnH / 2;
+        for (let i = 0; i < 3; i++) {
+          const bx = startX + i * btnW * spacing;
+          const by = startY;
+          if (mx > bx && mx < bx + btnW && my > by && my < by + btnH) {
+            const t = upgradeOptions[i];
+            applyUpgrade(t);
+            upgradeState = false;
+            spawnWave();
+            beep('triangle', 800, 0.08, 0.22);
+            break;
+          }
+        }
+      }
     });
     canvas.addEventListener('pointerup', () => mouse.down = false);
-
     // --- Touch virtual sticks ---
     const sticks = { L: { id: null, ox: 0, oy: 0, dx: 0, dy: 0, active: false }, R: { id: null, ox: 0, oy: 0, dx: 0, dy: 0, active: false } };
     function setupStick(el, key) {
@@ -354,7 +366,6 @@
     }
     setupStick(ui.stickL, 'L');
     setupStick(ui.stickR, 'R');
-
     ui.dashBtn.addEventListener('click', () => { wantDash = true; initAudio(); });
     ui.bombBtn.addEventListener('click', () => { wantBomb = true; initAudio(); });
     ui.pauseBtn.addEventListener('click', () => {
@@ -368,31 +379,41 @@
       ui.vol.textContent = muted ? 'OFF' : 'ON';
       beep('square', 220, 0.05, 0.12);
     });
-
     // --- Game state ---
     let running = false, paused = false, gameOver = false;
     let last = performance.now();
     let score = 0, wave = 1, combo = 0, comboTimer = 0;
-    let spawnTimer = 0, fps = 0, fpsAccum = 0, fpsFrames = 0;
+    let fps = 0, fpsAccum = 0, fpsFrames = 0;
     let wantDash = false, wantBomb = false, shake = 0;
-
+    let waveDelay = 0;
+    let upgradeState = false;
+    let upgradeOptions = [];
+    const upgradeNames = {
+      heal: 'Full Heal',
+      rate: 'Fire Rate ++',
+      dmg: 'Damage ++',
+      speed: 'Speed ++',
+      shield: 'Max HP ++',
+      multi: 'Multi Shot',
+      pierce: 'Pierce ++'
+    };
     const player = {
       x: W / 2, y: H / 2, r: 16, ax: 0, ay: 0, vx: 0, vy: 0, speed: 260,
       aim: 0, hp: 100, maxhp: 100, fireCD: 0, fireRate: 8, bulletSpeed: 560,
       damage: 10, dashCD: 0, dashEnergy: 1, bombCD: 0, inv: 0, alive: true,
       multi: 0, pierce: 0
     };
-
     const bullets = [], ebullets = [], enemies = [], pickups = [], particles = [];
-
     // --- Spawning ---
     function spawnEnemy() {
+      if (enemies.length > 50) return;
       const typeProb = RNG();
       let type;
-      if (typeProb < 0.4) type = 'chaser';
-      else if (typeProb < 0.7) type = 'shooter';
-      else if (typeProb < 0.9) type = 'splitter';
-      else type = 'tank';
+      if (typeProb < 0.35) type = 'chaser';
+      else if (typeProb < 0.6) type = 'shooter';
+      else if (typeProb < 0.8) type = 'splitter';
+      else if (typeProb < 0.95) type = 'tank';
+      else type = 'bomber';
       const margin = 60;
       const side = (RNG() * 4) | 0;
       let x, y;
@@ -404,8 +425,8 @@
       else if (type === 'shooter') enemies.push({ type, x, y, r: 16, hp: 30 + wave * 3, t: 0, speed: 80 + wave * 2, cd: rand(0.6, 1.3), scale: 1 });
       else if (type === 'splitter') enemies.push({ type, x, y, r: 12, hp: 18 + wave * 1.5, t: 0, speed: 120 + wave * 4, scale: 1 });
       else if (type === 'tank') enemies.push({ type, x, y, r: 20, hp: 50 + wave * 4, t: 0, speed: 60 + wave * 2, cd: rand(0.8, 1.4), scale: 1 });
+      else if (type === 'bomber') enemies.push({ type, x, y, r: 15, hp: 25 + wave * 2.5, t: 0, speed: 110 + wave * 3, scale: 1 });
     }
-
     function spawnBoss() {
       const margin = 60;
       const side = (RNG() * 4) | 0;
@@ -416,13 +437,35 @@
       else { x = rand(0, W); y = H + margin; }
       enemies.push({ type: 'boss', x, y, r: 32, hp: 200 + wave * 10, t: 0, speed: 70 + wave * 2, cd: 0.5, scale: 1 });
     }
-
+    function spawnWave() {
+      const toSpawn = 3 + Math.floor(wave / 2);
+      for (let i = 0; i < toSpawn; i++) spawnEnemy();
+      if (wave % 10 === 0) spawnBoss();
+    }
+    function generateUpgradeOptions() {
+      const types = ['heal', 'rate', 'dmg', 'speed', 'shield', 'multi', 'pierce'];
+      upgradeOptions = [];
+      for (let i = 0; i < 3; i++) {
+        const idx = Math.floor(RNG() * types.length);
+        upgradeOptions.push(types.splice(idx, 1)[0]);
+      }
+    }
+    function applyUpgrade(t) {
+      if (t === 'heal') { player.hp = player.maxhp; }
+      if (t === 'rate') { player.fireRate += 1.2; }
+      if (t === 'dmg') { player.damage += 4; }
+      if (t === 'speed') { player.speed += 20; }
+      if (t === 'shield') { player.maxhp += 20; player.hp += 20; }
+      if (t === 'multi') { player.multi += 1; }
+      if (t === 'pierce') { player.pierce += 2; }
+      ui.hp.textContent = Math.round(player.hp);
+      pickupSound();
+    }
     function spawnPickup(x, y) {
       const types = ['heal', 'rate', 'dmg', 'speed', 'shield', 'multi', 'pierce'];
       const t = types[(RNG() * types.length) | 0];
       pickups.push({ x, y, r: 10, t, life: 10 });
     }
-
     function startGame() {
       running = true;
       paused = false;
@@ -431,8 +474,10 @@
       wave = 1;
       combo = 0;
       comboTimer = 0;
-      spawnTimer = 0;
       shake = 0;
+      waveDelay = 0;
+      upgradeState = false;
+      upgradeOptions = [];
       Object.assign(player, {
         x: W / 2, y: H / 2, vx: 0, vy: 0, ax: 0, ay: 0, aim: 0, hp: 100, maxhp: 100,
         fireCD: 0, fireRate: 8, bulletSpeed: 560, damage: 10, dashCD: 0, dashEnergy: 1,
@@ -451,11 +496,9 @@
       last = performance.now();
       initAudio();
       beep('triangle', 660, 0.09, 0.25);
-      for (let i = 0; i < 4; i++) spawnEnemy();
+      spawnWave();
     }
-
     ui.start.addEventListener('click', startGame, { once: false });
-
     // --- Loop ---
     function loop(now) {
       if (!running) {
@@ -483,7 +526,6 @@
       draw(dt);
       requestAnimationFrame(loop);
     }
-
     // --- FX ---
     function spawnPart(x, y, dx, dy, life, size, col, a = 1) {
       if (particles.length > 200) return; // Cap particle count
@@ -496,36 +538,38 @@
         spawnPart(x, y, Math.cos(ang) * sp, Math.sin(ang) * sp, rand(0.3, 0.7), rand(2, 3), col, 1);
       }
     }
-
     function doDamageSound() { beep('sawtooth', 140, 0.08, 0.25); }
     function shootSound() { beep('square', 500, 0.04, 0.12); }
     function pickupSound() { beep('triangle', 680, 0.07, 0.18); }
     function bombSound() { beep('sawtooth', 300, 0.12, 0.28); }
     function dashSound() { beep('square', 520, 0.05, 0.18); }
     function comboSound() { beep('triangle', 880, 0.08, 0.2); }
-
     // --- Update ---
     function update(dt) {
+      if (upgradeState) return;
       // Combo timer
       comboTimer = Math.max(0, comboTimer - dt);
       if (comboTimer <= 0) {
         combo = 0;
         ui.combo.textContent = combo;
       }
-
-      // Wave & spawns
-      spawnTimer -= dt;
-      if (spawnTimer <= 0) {
-        const toSpawn = 2 + Math.floor(wave * 0.4);
-        for (let i = 0; i < toSpawn; i++) spawnEnemy();
-        spawnTimer = 5 - clamp(wave * 0.1, 0, 3.5);
-        wave++;
-        ui.wave.textContent = wave;
-        if (wave % 10 === 0) {
-          spawnBoss();
+      // Wave progression
+      if (enemies.length === 0) {
+        waveDelay += dt;
+        if (waveDelay > 1.5) {
+          waveDelay = 0;
+          wave++;
+          ui.wave.textContent = wave;
+          if (wave % 5 === 0) {
+            upgradeState = true;
+            generateUpgradeOptions();
+          } else {
+            spawnWave();
+          }
         }
+      } else {
+        waveDelay = 0;
       }
-
       // Input axes
       let mx = 0, my = 0;
       if (keys['w']) my -= 1;
@@ -535,12 +579,10 @@
       if (sticks.L.active) { mx += sticks.L.dx; my += sticks.L.dy; }
       const mlen = len(mx, my);
       if (mlen > 1) { mx /= mlen; my /= mlen; } // Normalize combined input
-
       // Aim
       let aimX = Math.cos(player.aim), aimY = Math.sin(player.aim);
       if (sticks.R.active) { aimX = sticks.R.dx; aimY = sticks.R.dy; }
       else { player.aim = angle(player.x, player.y, mouse.x, mouse.y); aimX = Math.cos(player.aim); aimY = Math.sin(player.aim); }
-
       // Movement
       const accel = 1200;
       player.vx = lerp(player.vx, mx * player.speed, 0.18);
@@ -549,7 +591,6 @@
       player.y += player.vy * dt;
       player.x = clamp(player.x, 20, W - 20);
       player.y = clamp(player.y, 20, H - 20);
-
       // Fire
       player.fireCD = Math.max(0, player.fireCD - dt);
       const firing = mouse.down || sticks.R.active;
@@ -566,7 +607,6 @@
         player.fireCD = 1 / player.fireRate;
         shootSound();
       }
-
       // Dash
       player.dashCD = Math.max(0, player.dashCD - dt);
       player.dashEnergy = clamp(player.dashEnergy + dt * 0.3, 0, 1);
@@ -582,7 +622,6 @@
         shake = 12;
       }
       wantDash = false;
-
       // Bomb
       player.bombCD = Math.max(0, player.bombCD - dt);
       if (wantBomb && player.bombCD === 0) {
@@ -596,10 +635,8 @@
         shake = 14;
       }
       wantBomb = false;
-
       // Timers
       player.inv = Math.max(0, player.inv - dt);
-
       // Update bullets
       for (let i = bullets.length - 1; i >= 0; i--) {
         const b = bullets[i];
@@ -626,7 +663,6 @@
           ebullets.splice(i, 1);
         }
       }
-
       // Enemies
       for (let i = enemies.length - 1; i >= 0; i--) {
         const e = enemies[i];
@@ -708,6 +744,15 @@
                   enemies.push({ type: 'chaser', x: e.x + rand(-8, 8), y: e.y + rand(-8, 8), r: 10, hp: 14 + wave * 1.5, t: 0, speed: 130 + wave * 5, scale: 1 });
                 }
               }
+              if (e.type === 'bomber') {
+                for (let k = 0; k < 12; k++) {
+                  const ang = k / 12 * TAU;
+                  const sp = 240;
+                  ebullets.push({ x: e.x, y: e.y, dx: Math.cos(ang) * sp, dy: Math.sin(ang) * sp, r: 5, life: 1.2 });
+                }
+                burst(e.x, e.y, 35, 'rgba(253,224,71,0.95)', 280);
+                beep('sawtooth', 120, 0.1, 0.25);
+              }
               burst(e.x, e.y, 28, 'rgba(103,232,249,0.95)', 220);
               beep('sawtooth', 180, 0.06, 0.22);
               enemies.splice(i, 1);
@@ -716,7 +761,6 @@
           }
         }
       }
-
       // Pickups
       for (let i = pickups.length - 1; i >= 0; i--) {
         const p = pickups[i];
@@ -736,25 +780,22 @@
           pickups.splice(i, 1);
         }
       }
-
       // Player death
       if (player.hp <= 0) { die(); }
-
       // Best score save
       if (score > bestScore) {
         bestScore = Math.floor(score);
         ui.best.textContent = bestScore;
         localStorage.setItem('rogue_best', bestScore);
       }
-
       // Screen shake timer
       shake = Math.max(0, shake - dt * 30);
     }
-
     function die() {
       if (gameOver) return;
       gameOver = true;
       running = false;
+      upgradeState = false;
       for (let i = 0; i < 50; i++) {
         const ang = RNG() * TAU;
         const sp = rand(120, 260);
@@ -766,7 +807,6 @@
         ui.start.textContent = 'Restart';
       }, 450);
     }
-
     // --- Draw ---
     function draw(dt) {
       // Clear + shake
@@ -774,10 +814,8 @@
       const sy = shake ? (Math.random() - 0.5) * shake : 0;
       ctx.setTransform(1, 0, 0, 1, sx, sy);
       ctx.clearRect(-sx, -sy, W, H);
-
       // Grid background
       drawGrid();
-
       // Particles
       ctx.globalAlpha = 1;
       for (let i = particles.length - 1; i >= 0; i--) {
@@ -789,10 +827,8 @@
         glow(p.x, p.y, p.size * 3, p.col, Math.max(0.15, p.life * 1.2));
       }
       ctx.globalAlpha = 1;
-
       // Player
       drawPlayer();
-
       // Bullets
       ctx.fillStyle = '#9cc1ff';
       ctx.beginPath();
@@ -802,22 +838,35 @@
       ctx.beginPath();
       for (const b of ebullets) { ctx.moveTo(b.x, b.y); ctx.arc(b.x, b.y, b.r, 0, TAU); }
       ctx.fill();
-
       // Enemies
       for (const e of enemies) { drawEnemy(e); }
-
       // Pickups
       for (const p of pickups) { drawPickup(p); }
-
       // Overlays
       if (paused) { overlayText('PAUSED', H * 0.45, 44); }
       if (!running && !gameOver) { overlayText('Press Start', H * 0.52, 20); }
       if (gameOver) { overlayText('GAME OVER', H * 0.42, 44); overlayText('Press R or click Start', H * 0.54, 20); }
-
+      if (upgradeState) {
+        overlayText('Choose an Upgrade', H * 0.3, 36);
+        const btnW = 200, btnH = 60;
+        const spacing = 1.1;
+        const startX = W / 2 - (btnW * 3 * spacing - btnW * (spacing - 1)) / 2;
+        const startY = H / 2 - btnH / 2;
+        for (let i = 0; i < 3; i++) {
+          const bx = startX + i * btnW * spacing;
+          const by = startY;
+          const t = upgradeNames[upgradeOptions[i]];
+          rounded(bx, by, btnW, btnH, 12, 'rgba(255,255,255,0.2)');
+          ctx.fillStyle = 'white';
+          ctx.font = '24px system-ui';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(t, bx + btnW / 2, by + btnH / 2);
+        }
+      }
       // Reset transform
       ctx.setTransform(1, 0, 0, 1, 0, 0);
     }
-
     function drawGrid() {
       const cell = 40;
       ctx.strokeStyle = 'rgba(255,255,255,0.06)';
@@ -832,7 +881,6 @@
       ctx.fillStyle = g;
       ctx.fillRect(0, 0, W, H);
     }
-
     function glow(x, y, r, col, alpha = 0.9) {
       const g = ctx.createRadialGradient(x, y, 0, x, y, r);
       g.addColorStop(0, col);
@@ -844,7 +892,6 @@
       ctx.fill();
       ctx.globalAlpha = 1;
     }
-
     function drawPlayer() {
       const x = player.x, y = player.y;
       glow(x, y, 26, 'rgba(103,232,249,0.25)', 1);
@@ -862,7 +909,6 @@
       ctx.arc(x, y, 22, -Math.PI / 2, -Math.PI / 2 + pct * TAU);
       ctx.stroke();
     }
-
     function rounded(x, y, w, h, r, col) {
       ctx.fillStyle = col;
       ctx.beginPath();
@@ -874,9 +920,8 @@
       ctx.closePath();
       ctx.fill();
     }
-
     function drawEnemy(e) {
-      const col = e.type === 'chaser' ? '#f59e0b' : e.type === 'shooter' ? '#a78bfa' : e.type === 'splitter' ? '#34d399' : e.type === 'tank' ? '#fb7185' : '#e11d48';
+      let col = e.type === 'chaser' ? '#f59e0b' : e.type === 'shooter' ? '#a78bfa' : e.type === 'splitter' ? '#34d399' : e.type === 'tank' ? '#fb7185' : e.type === 'bomber' ? '#fde047' : '#e11d48';
       const baseR = e.r;
       glow(e.x, e.y, baseR + 2, e.type === 'shooter' || e.type === 'boss' ? 'rgba(167,139,250,0.35)' : 'rgba(255,255,255,0.2)', 1);
       ctx.save();
@@ -887,13 +932,11 @@
       ctx.fillRect(-baseR * 0.4, -baseR * 0.2, baseR * 0.8, baseR * 0.4);
       ctx.restore();
     }
-
     function drawPickup(p) {
       let col = p.t === 'heal' ? '#34d399' : p.t === 'rate' ? '#67e8f9' : p.t === 'dmg' ? '#fb7185' : p.t === 'speed' ? '#fde047' : p.t === 'shield' ? '#a78bfa' : p.t === 'multi' ? '#f472b6' : '#ec4899';
       glow(p.x, p.y, 18, col.replace('1', '0.35'), 1);
       rounded(p.x - 8, p.y - 8, 16, 16, 6, col);
     }
-
     function overlayText(text, y, size) {
       ctx.font = `${size}px system-ui, -apple-system, Segoe UI, Roboto, Inter, Arial, sans-serif`;
       ctx.fillStyle = 'rgba(255,255,255,0.9)';
@@ -901,11 +944,9 @@
       ctx.textBaseline = 'middle';
       ctx.fillText(text, W / 2, y);
     }
-
     // Start idle render & loop
     draw(0);
     requestAnimationFrame(loop);
-
     // Restart key
     window.addEventListener('keydown', e => {
       if (e.key === 'r' || e.key === 'R') {
